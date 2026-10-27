@@ -1,5 +1,7 @@
 # Game Animation Sample Plugin Toolkit
 
+![Game Animation Sample Plugin Toolkit — Unreal Engine 5.8 animation showcase](./Unreal%20Engine%20Animation%20Showcase.png)
+
 PowerShell toolkit for locally converting the Epic **Game Animation Sample** project into an installable, updateable Unreal Engine content plugin. This repository contains the **installer and update scripts**, not the sample assets or a prebuilt plugin.
 
 Prepared by **Axchemy Studios - Marcio Vale CEO**
