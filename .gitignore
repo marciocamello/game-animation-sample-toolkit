@@ -1,0 +1,31 @@
+# Generated outputs
+/Generated/
+/Output/
+/Release/
+/Temp/
+
+# Unreal caches and binaries
+/Binaries/
+/Build/
+/DerivedDataCache/
+/Intermediate/
+/Saved/
+/.vs/
+
+# Do not commit Epic sample content or generated plugin payloads
+/Content/
+/Plugins/
+*.uasset
+*.umap
+*.ubulk
+*.uexp
+*.utoc
+*.ucas
+
+# Local tooling artifacts
+*.log
+*.tmp
+*.bak
+*.swp
+*.orig
+BuildReport.json

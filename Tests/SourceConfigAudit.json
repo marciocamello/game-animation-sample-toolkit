@@ -1,0 +1,70 @@
+{
+  "AuditDate": "2026-10-26",
+  "Mode": "Read-only configuration inspection; no Unreal execution or asset changes",
+  "ConfigFiles": [
+    {
+      "File": "DefaultDeviceProfiles.ini",
+      "SHA256": "1964E3CC60BF356D3466ACC96AE867A77E7FC42EC6ECE1ABBBB9F84FD992B01D"
+    },
+    {
+      "File": "DefaultEditor.ini",
+      "SHA256": "1EB9F1368805189F33DDC29B7FB49601FF7A87E4E3E905A0891E9E589A5B1851"
+    },
+    {
+      "File": "DefaultEngine.ini",
+      "SHA256": "D92E3CC8B79B4BE0541751DB2328013556B17FF4A0E20C3BA69635F1364D9794"
+    },
+    {
+      "File": "DefaultGame.ini",
+      "SHA256": "C7050E58AC2048F1B0CE0BB34FF374442525BA5BE3DB558FE00868FB8D5095C9"
+    },
+    {
+      "File": "DefaultGameplayTags.ini",
+      "SHA256": "3225C3D6EB658895EE4279C8ACD5ACE1A8CE792746F90AB26F39FCFB5A318310"
+    },
+    {
+      "File": "DefaultInput.ini",
+      "SHA256": "2D33CAB8A939164C2F0226CAF7BEFEC87F9B0F5AC38E0F30E710DE6DE954435D"
+    },
+    {
+      "File": "DefaultNetworkPrediction.ini",
+      "SHA256": "6BD705A456ABE7911DDA0095205FF95473A4470E74E04D7563C190E3A662A017"
+    }
+  ],
+  "SelectedBlocks": [
+    {
+      "Block": "DefaultGame.AssetManager",
+      "SourceFile": "DefaultGame.ini",
+      "SelectedAssignmentCount": 8,
+      "FoleyTags": []
+    },
+    {
+      "Block": "DefaultInput.InputSettings",
+      "SourceFile": "DefaultInput.ini",
+      "SelectedAssignmentCount": 82,
+      "FoleyTags": []
+    },
+    {
+      "Block": "DefaultGameplayTags.Tags",
+      "SourceFile": "DefaultGameplayTags.ini",
+      "SelectedAssignmentCount": 53,
+      "FoleyTags": [
+        "Foley.Event.Kick",
+        "Foley.Event.Punch",
+        "Foley.Event.Ragdoll"
+      ]
+    },
+    {
+      "Block": "DefaultEngine.Runtime",
+      "SourceFile": "DefaultEngine.ini",
+      "SelectedAssignmentCount": 42,
+      "FoleyTags": []
+    },
+    {
+      "Block": "DefaultNetworkPrediction.Settings",
+      "SourceFile": "DefaultNetworkPrediction.ini",
+      "SelectedAssignmentCount": 1,
+      "FoleyTags": []
+    }
+  ]
+}
