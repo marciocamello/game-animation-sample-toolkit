@@ -162,6 +162,8 @@ $manifest.Files = @(Get-GasTreeInventory $packageRoot)
 Write-GasJson -Value $manifest -Path (Get-GasPackageManifestPath -PackageRoot $packageRoot)
 $null = Assert-GasPackage $packageRoot
 if (Test-Path -LiteralPath $finalPackageRoot) {
+    $settingsBackup = "$finalPackageRoot.settings-backup-$([guid]::NewGuid().ToString('N'))"
+    New-GasSettingsBackup -SourcePluginRoot $finalPackageRoot -BackupRoot $settingsBackup
     $previousOutput = "$finalPackageRoot.previous-$([guid]::NewGuid().ToString('N'))"
     [IO.Directory]::Move($finalPackageRoot, $previousOutput)
 }
@@ -170,7 +172,11 @@ catch {
     if ($previousOutput) { [IO.Directory]::Move($previousOutput, $finalPackageRoot) }
     throw
 }
-if ($previousOutput) { Write-GasMessage "Previous output retained at '$previousOutput'." }
+if ($previousOutput) {
+    try { Remove-GasTransactionDirectory -Path $previousOutput -ParentRoot (Split-Path -Parent $finalPackageRoot) }
+    catch { throw "Build committed at '$finalPackageRoot', but temporary previous output cleanup failed at '$previousOutput'. Error: $_" }
+    Write-GasMessage "Settings-only backup retained at '$settingsBackup'. Previous asset payload removed."
+}
 
 Write-GasMessage -Level Success -Message "Plugin package generated at '$finalPackageRoot' using build mode '$buildMode'."
 } finally {

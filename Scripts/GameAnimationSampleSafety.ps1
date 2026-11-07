@@ -186,6 +186,50 @@ function Get-GasSourceIntegrationConfig {
     return $selected.Replace('/Game/', '/GameAnimationSample/')
 }
 
+function New-GasSettingsBackup {
+    param([Parameter(Mandatory)][string]$SourcePluginRoot, [Parameter(Mandatory)][string]$BackupRoot, [string]$HostSnapshotRoot)
+    $null = Assert-GasSafePath $SourcePluginRoot -Tree
+    $null = Assert-GasSafePath $BackupRoot -Tree
+    Assert-GasSeparatePaths $SourcePluginRoot $BackupRoot
+    if (Test-Path -LiteralPath $BackupRoot) { throw "Backup already exists: '$BackupRoot'." }
+    $files = [ordered]@{}
+    foreach ($name in @('GameAnimationSample.uplugin','GameAnimationSample.install.json','GameAnimationSample.host-install.json')) {
+        $path = Join-Path $SourcePluginRoot $name
+        if (Test-Path -LiteralPath $path -PathType Leaf) { $files["Plugin\$name"] = $path }
+    }
+    foreach ($directory in @('Config','InstallData')) {
+        $path = Join-Path $SourcePluginRoot $directory
+        if (Test-Path -LiteralPath $path) {
+            foreach ($file in Get-ChildItem -LiteralPath $path -Recurse -File -Force -Filter '*.ini') {
+                $files['Plugin\' + [IO.Path]::GetRelativePath($SourcePluginRoot, $file.FullName)] = $file.FullName
+            }
+        }
+    }
+    if ($HostSnapshotRoot) {
+        $null = Assert-GasSafePath $HostSnapshotRoot -Tree
+        foreach ($name in @('HostProject.uproject','SnapshotInventory.json')) { $files["Host\$name"] = Join-Path $HostSnapshotRoot $name }
+        foreach ($file in Get-ChildItem -LiteralPath (Join-Path $HostSnapshotRoot 'Config') -File -Filter '*.ini') {
+            $files["Host\Config\$($file.Name)"] = $file.FullName
+        }
+    }
+    New-GasDirectory $BackupRoot
+    foreach ($relative in $files.Keys) {
+        $destination = Join-Path $BackupRoot $relative
+        New-GasDirectory (Split-Path -Parent $destination)
+        Copy-Item -LiteralPath $files[$relative] -Destination $destination
+        if ((Get-FileHash -LiteralPath $files[$relative]).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) { throw "Settings backup verification failed: '$destination'." }
+    }
+    Write-GasJson -Value @{ BackupKind = 'SettingsOnly'; Files = @(Get-GasTreeInventory $BackupRoot) } -Path (Join-Path $BackupRoot 'SettingsBackup.json')
+}
+
+function Remove-GasTransactionDirectory {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ParentRoot)
+    $resolved = Assert-GasSafePath $Path -Tree
+    $parent = Assert-GasSafePath $ParentRoot
+    if (-not $resolved.StartsWith($parent.TrimEnd([char[]]'\/') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Cleanup escapes transaction root: '$resolved'." }
+    if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
+}
+
 function Get-GasStagingPathIdentity {
     param([string]$Value)
     return $Value.Trim().Trim('"').Replace('\', '/').ToLowerInvariant()
@@ -255,7 +299,8 @@ function Invoke-GasHostOperation {
             $journal = Join-Path $directory.FullName 'Transaction.json'
             if (Test-Path -LiteralPath $journal) {
                 $state = Read-GasJson $journal
-                if ($state.Phase -notin @('Committed','RolledBack')) { throw "Unfinished transaction. Review recovery snapshot '$($directory.FullName)' before retrying." }
+                if ($state.Phase -notin @('Committed','RolledBack') -or
+                    ($state.Phase -eq 'Committed' -and (Test-Path -LiteralPath (Join-Path $directory.FullName 'PreviousPlugin')))) { throw "Unfinished transaction or pending temporary cleanup. Review recovery snapshot '$($directory.FullName)' before retrying." }
             }
         }
     }
@@ -281,7 +326,7 @@ function Invoke-GasHostOperation {
             if ($relative -in @('GameAnimationSample.install.json', 'GameAnimationSample.host-install.json') -or $owned.Contains($relative)) { return $false }
             if (Test-Path -LiteralPath (Join-Path $source $relative)) {
                 if ($oldManifest.PSObject.Properties.Name -contains 'Files') { throw "Unmanaged installed file conflicts with incoming package: '$relative'." }
-                return $false # Legacy packages lack per-file ownership; keep the complete old plugin backup.
+                return $false # Legacy overlapping edits cannot be identified; settings are retained, assets are temporary only.
             }
             return $true
         })
@@ -327,7 +372,7 @@ function Invoke-GasHostOperation {
     foreach ($path in $planned.Keys) {
         if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReadOnly)) { throw "Read-only host file: '$path'." }
     }
-    Write-GasMessage "Preflight passed: $Operation '$target'. Host snapshots: '$transactions'. Plugin backup (Update only): '$backup'."
+    Write-GasMessage "Preflight passed: $Operation '$target'. Host snapshots: '$transactions'. Settings-only backup (Update): '$backup'. Old assets are temporary during rollback protection only."
     foreach ($path in $planned.Keys) { Write-GasMessage "Reconcile: '$path'" }
     if ($DryRun) {
         return [pscustomobject]@{
@@ -346,6 +391,7 @@ function Invoke-GasHostOperation {
     $guard.Dispose()
     $snapshot = New-GasHostMutationSnapshot -HostProjectRoot $hostRoot -UProjectPath $context.UProjectPath
     $staged = Join-Path $snapshot 'Package'
+    $previousPlugin = Join-Path $snapshot 'PreviousPlugin'
     $oldMoved = $false; $newMoved = $false; $hostChanged = $false
     try {
         Write-GasJson -Value @{ Operation = $Operation; HostProject = $context.UProjectPath; Backup = $backup; Target = $target; Phase = 'Preparing' } -Path (Join-Path $snapshot 'Transaction.json')
@@ -369,9 +415,10 @@ function Invoke-GasHostOperation {
         if ($FaultInjector) { & $FaultInjector 'AfterStaging' }
         New-GasDirectory (Split-Path -Parent $target)
         New-GasDirectory $backups
+        if ($Operation -eq 'Update') { New-GasSettingsBackup -SourcePluginRoot $target -BackupRoot $backup -HostSnapshotRoot $snapshot }
         Write-GasJson -Value @{ Operation = $Operation; HostProject = $context.UProjectPath; Backup = $backup; Target = $target; Phase = 'Prepared' } -Path (Join-Path $snapshot 'Transaction.json')
         if ($Operation -eq 'Update') {
-            [IO.Directory]::Move($target, $backup)
+            [IO.Directory]::Move($target, $previousPlugin)
             $oldMoved = $true
         }
         [IO.Directory]::Move($staged, $target)
@@ -396,7 +443,7 @@ function Invoke-GasHostOperation {
         try {
             if ($hostChanged) { Restore-GasHostMutationSnapshot -SnapshotRoot $snapshot -HostProjectRoot $hostRoot -UProjectPath $context.UProjectPath }
             if ($newMoved) { $null = Assert-GasSafePath $target -Tree; Remove-Item -LiteralPath $target -Recurse -Force }
-            if ($oldMoved) { [IO.Directory]::Move($backup, $target) }
+            if ($oldMoved) { [IO.Directory]::Move($previousPlugin, $target) }
             foreach ($directory in @(@{ Name = 'Config'; Existed = $configExisted }, @{ Name = 'Plugins'; Existed = $pluginsExisted })) {
                 $path = Join-Path $hostRoot $directory.Name
                 if (-not $directory.Existed -and (Test-Path -LiteralPath $path) -and @(Get-ChildItem -LiteralPath $path -Force).Count -eq 0) { Remove-Item -LiteralPath $path }
@@ -406,10 +453,19 @@ function Invoke-GasHostOperation {
                 Remove-Item -LiteralPath $staged -Recurse -Force
             }
             Write-GasJson -Value @{ Operation = $Operation; HostProject = $context.UProjectPath; Backup = $backup; Target = $target; Phase = 'RolledBack' } -Path (Join-Path $snapshot 'Transaction.json')
-        } catch { throw "Rollback incomplete. Preserve snapshot '$snapshot' and backup '$backup'. Original: $failure. Recovery: $_" }
+        } catch { throw "Rollback incomplete. Preserve snapshot '$snapshot' (temporary previous plugin: '$previousPlugin') and settings backup '$backup'. Original: $failure. Recovery: $_" }
         throw "Operation rolled back. Snapshot retained at '$snapshot'. Error: $failure"
     }
-    Write-GasMessage -Level Success "$Operation completed. Host recovery snapshot: '$snapshot'. Previous plugin backup (Update): '$backup'."
+    # Cleanup is after the commit boundary: never attempt rollback once deletion
+    # of the temporary old payload has started.
+    try {
+        if ($oldMoved) {
+            if ($FaultInjector) { & $FaultInjector 'BeforePreviousPluginCleanup' }
+            Remove-GasTransactionDirectory -Path $previousPlugin -ParentRoot $snapshot
+        }
+    }
+    catch { throw "Operation committed, but temporary asset cleanup failed at '$previousPlugin'. Current plugin is valid. Resolve cleanup before retrying. Error: $_" }
+    Write-GasMessage -Level Success "$Operation completed. Settings-only backup (Update): '$backup'. Host recovery snapshot: '$snapshot'. Temporary old assets removed."
     } finally {
         if ($acquired) { $mutex.ReleaseMutex() }
         $mutex.Dispose()

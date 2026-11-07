@@ -145,10 +145,13 @@ UnknownSetting=True
             Check ((Tree $hostRoot -HostFilesOnly) -ceq $before) "Incomplete rollback: $failurePoint"
         }
     }
-    Case 'Plugin backup integrity and host recovery metadata' {
+    Case 'Settings backup integrity and host recovery metadata without assets' {
         $backup = @(Get-ChildItem -LiteralPath (Join-Path $hostRoot 'Saved\GameAnimationSampleToolkit\Backups') -Directory)[0]
-        $old = Read-GasJson (Join-Path $backup.FullName 'GameAnimationSample.install.json')
-        Assert-GasInventory $backup.FullName $old.Files
+        $settings = Read-GasJson (Join-Path $backup.FullName 'SettingsBackup.json')
+        Check ($settings.BackupKind -eq 'SettingsOnly') 'Wrong backup kind.'
+        Assert-GasInventory $backup.FullName $settings.Files
+        Check (Test-Path -LiteralPath (Join-Path $backup.FullName 'Host\HostProject.uproject')) 'Host settings missing.'
+        Check (@(Get-ChildItem -LiteralPath $backup.FullName -Recurse -File | Where-Object Extension -notin '.ini','.json','.uproject','.uplugin').Count -eq 0) 'Asset/development payload retained.'
         $snapshots = @(Get-ChildItem -LiteralPath (Join-Path $hostRoot 'Saved\GameAnimationSampleToolkit\Transactions') -Directory)
         Check ($snapshots.Count -ge 3) 'Recovery snapshots not retained.'
         foreach ($snapshot in $snapshots) { Check (Test-Path -LiteralPath (Join-Path $snapshot.FullName 'HostProject.uproject')) 'Host descriptor missing from snapshot.' }
@@ -179,7 +182,7 @@ UnknownSetting=True
             Check ((Tree $hostRoot) -ceq $before) 'Read-only rejection wrote files.'
         } finally { [IO.File]::SetAttributes($ini, $originalAttributes) }
     }
-    Case 'Legacy installed manifest without inventory upgrades with complete backup' {
+    Case 'Legacy installed manifest upgrades with settings-only backup' {
         $legacy = New-Host 'LegacyHost'
         Invoke-GasHostOperation -HostProject $legacy -PackageRoot $package -Operation Install
         $oldPath = Join-Path $legacy 'Plugins\GameAnimationSample\GameAnimationSample.install.json'
@@ -191,7 +194,7 @@ UnknownSetting=True
         $updated = Read-GasJson $oldPath
         Check ($updated.PSObject.Properties.Name -contains 'Files') 'Legacy package not upgraded.'
         $backup = @(Get-ChildItem -LiteralPath (Join-Path $legacy 'Saved\GameAnimationSampleToolkit\Backups') -Directory)[0]
-        Check ((Read-GasJson (Join-Path $backup.FullName 'GameAnimationSample.install.json')).BuildVersion -eq '5.8.previous') 'Legacy backup lost.'
+        Check ((Read-GasJson (Join-Path $backup.FullName 'Plugin\GameAnimationSample.install.json')).BuildVersion -eq '5.8.previous') 'Legacy settings backup lost.'
     }
     Case 'Array identities tolerate whitespace/casing and deduplicate tags semantically' {
         $path = Join-Path $temp 'Semantic.ini'
@@ -214,6 +217,46 @@ UnknownSetting=True
         [IO.File]::WriteAllText($custom, 'keep user data')
         Update-Fixture $hostRoot
         Check ([IO.File]::ReadAllText($custom) -ceq 'keep user data') 'Unmanaged file lost.'
+    }
+    Case 'Repeated updates retain settings only, independent of asset size' {
+        $largePackage = Join-Path $temp 'LargePackage\GameAnimationSample'
+        New-GasDirectory (Split-Path -Parent $largePackage)
+        Copy-Item -LiteralPath $package -Destination $largePackage -Recurse
+        [IO.File]::WriteAllBytes((Join-Path $largePackage 'Content\LargeFixture.uasset'), [byte[]]::new(4MB))
+        $manifestPath = Join-Path $largePackage 'GameAnimationSample.install.json'
+        $largeManifest = Read-GasJson $manifestPath
+        $largeManifest.Files = @(Get-GasTreeInventory $largePackage | Where-Object Path -ne 'GameAnimationSample.install.json')
+        Write-GasJson $largeManifest $manifestPath
+        $retentionHost = New-Host 'RetentionHost'
+        New-GasDirectory (Join-Path $retentionHost 'Content')
+        [IO.File]::WriteAllText((Join-Path $retentionHost 'Content\HostOnly.umap'), 'Host asset must never enter backups.')
+        Invoke-GasHostOperation -HostProject $retentionHost -PackageRoot $largePackage -Operation Install
+        foreach ($iteration in 1..3) { Invoke-GasHostOperation -HostProject $retentionHost -PackageRoot $largePackage -Operation Update }
+        $historyRoot = Join-Path $retentionHost 'Saved\GameAnimationSampleToolkit'
+        $retained = @(Get-ChildItem -LiteralPath $historyRoot -Recurse -File -Force)
+        Check (@($retained | Where-Object Extension -notin '.ini','.json','.uproject','.uplugin').Count -eq 0) 'Assets/scripts retained in completed history.'
+        Check (($retained | Measure-Object Length -Sum).Sum -lt 1MB) 'Settings history grew with asset payload size.'
+        Check (@(Get-ChildItem -LiteralPath $historyRoot -Recurse -Directory | Where-Object Name -in 'Package','PreviousPlugin','Content').Count -eq 0) 'Temporary payload directory leaked.'
+        Check ((Get-Item -LiteralPath (Join-Path $retentionHost 'Plugins\GameAnimationSample\Content\LargeFixture.uasset')).Length -eq 4MB) 'Active asset was removed.'
+    }
+    Case 'Cleanup failure after commit preserves active plugin and blocks unsafe retry' {
+        $cleanupHost = New-Host 'CleanupFailure'
+        Invoke-GasHostOperation -HostProject $cleanupHost -PackageRoot $package -Operation Install
+        $inject = New-FaultInjector 'BeforePreviousPluginCleanup'
+        Reject { Invoke-GasHostOperation -HostProject $cleanupHost -PackageRoot $package -Operation Update -FaultInjector $inject } 'Operation committed, but temporary asset cleanup failed'
+        Assert-GasHostPluginLayout (Join-Path $cleanupHost 'Plugins\GameAnimationSample')
+        $before = Tree $cleanupHost
+        Reject { Invoke-GasHostOperation -HostProject $cleanupHost -PackageRoot $package -Operation Update } 'pending temporary cleanup'
+        Check ((Tree $cleanupHost) -ceq $before) 'Retry changed pending recovery state.'
+    }
+    Case 'Legacy replacement helper also retains settings without asset payloads' {
+        $helperHost = New-Host 'HelperHost'
+        Invoke-GasHostOperation -HostProject $helperHost -PackageRoot $package -Operation Install
+        $helperBackups = Join-Path $helperHost 'Saved\HelperBackups'
+        $settingsRoot = Replace-GasHostPluginPackage -PackageRoot $package -HostPluginRoot (Join-Path $helperHost 'Plugins\GameAnimationSample') -BackupsRoot $helperBackups
+        $settings = Read-GasJson (Join-Path $settingsRoot 'SettingsBackup.json')
+        Check ($settings.BackupKind -eq 'SettingsOnly') 'Helper retained legacy full plugin backup.'
+        Check (@(Get-ChildItem -LiteralPath $helperBackups -Recurse -File | Where-Object Extension -notin '.ini','.json','.uproject','.uplugin').Count -eq 0) 'Helper retained payload files.'
     }
     Case 'User edits to inventoried plugin files reject Update without writes' {
         $asset = Join-Path $hostRoot 'Plugins\GameAnimationSample\Content\RootFixture.uasset'
@@ -355,9 +398,10 @@ UnknownSetting=True
         & (Join-Path $repository 'Clean-Build-GameAnimationSamplePlugin.ps1') -ProjectRoot $sample -OutputRoot $package -DryRun
         Check ((Tree $temp) -ceq $before) 'Build DryRun wrote files.'
     }
-    Case 'RefreshOutput commits validated package and retains previous output' {
+    Case 'RefreshOutput retains settings only and removes temporary previous assets' {
         & (Join-Path $repository 'Build-GameAnimationSamplePlugin.ps1') -ProjectRoot $sample -OutputRoot $package -RefreshOutput -SkipUnrealDuplication
-        Check (@(Get-ChildItem -LiteralPath (Split-Path -Parent $package) -Directory -Filter 'GameAnimationSample.previous-*').Count -eq 1) 'Previous output not retained.'
+        Check (@(Get-ChildItem -LiteralPath (Split-Path -Parent $package) -Directory -Filter 'GameAnimationSample.previous-*').Count -eq 0) 'Previous assets retained.'
+        Check (@(Get-ChildItem -LiteralPath (Split-Path -Parent $package) -Directory -Filter 'GameAnimationSample.settings-backup-*').Count -eq 1) 'Settings backup missing.'
         $null = Assert-GasPackage $package
         Check ((Tree $sample) -ceq $sampleBefore) 'Source modified during refresh.'
     }
@@ -388,11 +432,13 @@ UnknownSetting=True
         Check ((Tree $temp) -ceq $invalidBefore) 'Foreign identity rejection wrote files.'
         $manifest.PluginMountPoint = '/GameAnimationSample'
         Write-GasJson $manifest $legacyManifestPath
-        $legacyBefore = Tree $legacyOutput
+        $legacyDescriptorHash = (Get-FileHash -LiteralPath $descriptorPath).Hash
         & (Join-Path $repository 'Build-GameAnimationSamplePlugin.ps1') -ProjectRoot $legacySample -RefreshOutput -SkipUnrealDuplication
         $null = Assert-GasPackage $legacyOutput
         $previous = @(Get-ChildItem -LiteralPath (Split-Path -Parent $legacyOutput) -Directory -Filter 'GameAnimationSample.previous-*')
-        Check ($previous.Count -eq 1 -and (Tree $previous[0].FullName) -ceq $legacyBefore) 'Original legacy package was not retained intact.'
+        Check ($previous.Count -eq 0) 'Legacy asset payload retained after commit.'
+        $settings = @(Get-ChildItem -LiteralPath (Split-Path -Parent $legacyOutput) -Directory -Filter 'GameAnimationSample.settings-backup-*')[0]
+        Check ((Get-FileHash -LiteralPath (Join-Path $settings.FullName 'Plugin\GameAnimationSample.uplugin')).Hash -eq $legacyDescriptorHash) 'Original legacy descriptor settings were not preserved.'
         Check ((Tree $sample) -ceq $sampleBefore) 'Original fixture sample changed.'
     }
 } finally {

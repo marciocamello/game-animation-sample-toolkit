@@ -92,7 +92,7 @@ pwsh -File .\Update-GameAnimationSampleInProject.ps1 -HostProject $hostProject -
 
 **Optional host verification:** `pwsh -File .\Validate-GameAnimationSampleToolkit.ps1 -HostProject "<host-project-directory>" -PackageRoot "<generated-package>"` exercises reconciliation in a temporary host clone. For a no-write preview without cloning, use Install/Update `-DryRun`. The validation script without arguments runs its synthetic self-tests.
 
-**Operational notes:** Install refuses to replace a preexisting plugin; use Update for toolkit-owned installations. A multi-GB package operation may take time and may not display a progress bar. Do not assume it is frozen solely because no progress bar appears; inspect the final `[Success]` result. Do not copy PowerShell's `>>` continuation prompt into commands. Backups and transaction snapshots are retained for recovery and can consume significant disk space.
+**Operational notes:** Install refuses to replace a preexisting plugin; use Update for toolkit-owned installations. A multi-GB package operation may take time and may not display a progress bar. Do not assume it is frozen solely because no progress bar appears; inspect the final `[Success]` result. Do not copy PowerShell's `>>` continuation prompt into commands. Completed operations retain settings only; full payload staging is temporary.
 
 ## Host-project safety contract
 
@@ -101,12 +101,14 @@ pwsh -File .\Update-GameAnimationSampleInProject.ps1 -HostProject $hostProject -
 - Existing matching host input mappings, profiles, redirects, tags and named CVars are not duplicated. Conflicting channels, collision profiles and redirects abort during preflight. Explicitly disabled dependencies and cleared host arrays also require deliberate resolution.
 - Source-sample `-` and `!` array mutations are filtered out; they are never replayed into the host. Managed INI entries include their explicit section headers.
 - Before install/update, the toolkit validates package identity, paths, dependencies and every INI merge in memory. It stages and hashes the incoming plugin before replacing anything. On failure it restores the .uproject, managed INIs and previous plugin. Recovery snapshots and transaction journals remain under `Saved/GameAnimationSampleToolkit/Transactions` on success and failure.
-- Updates keep timestamped copies of the previous plugin under `Saved/GameAnimationSampleToolkit/Backups`. Host data outside the toolkit-managed files is not replaced.
+- Updates retain **settings-only** backups under `Saved/GameAnimationSampleToolkit/Backups`: host INIs/`.uproject`, plugin INIs and descriptor/install metadata. Assets, scripts, binaries and caches are not retained. Old plugin assets are moved temporarily inside the transaction for rollback, then deleted after commit.
 - If the host has incompatible collision-channel or redirect entries, **the operation fails**. Resolve such conflicts deliberately; automatic overriding is unsafe.
-- Install never replaces an existing plugin. Update requires toolkit ownership metadata. New packages include a SHA-256 inventory; edited managed plugin files block updates, and additional non-conflicting user files are preserved. Older installed packages without inventories can be upgraded, but overlapping edits in their old payload cannot be detected; review their complete backup.
+- Install never replaces an existing plugin. Update requires toolkit ownership metadata. New packages include a SHA-256 inventory; edited managed plugin files block updates, and additional non-conflicting user files are preserved. Older installed packages without inventories can be upgraded, but overlapping edits cannot be detected; review migration and keep an independent asset backup if needed.
 - Local paths only: drive roots, UNC/device paths, parent traversal, links and reparse points are rejected. A named mutex serializes toolkit operations per host. Close Unreal Editor and other writers before installation; these tools cannot lock an entire project against external applications.
 - RawCopy redirects that would shadow an existing host `.uasset` or `.umap` fail preflight.
 - Install/Update add a host-derived `[Staging]` permission for `DefaultNetworkPrediction.ini` in `DefaultGame.ini`. Existing staging entries are preserved; explicit conflicting host deny/remove/clear policies abort preflight.
+
+Refresh builds also retain only `.settings-backup-<guid>` after success, removing the temporary `.previous-<guid>` asset payload. Existing historical backups are not deleted automatically. A crash or cleanup error may leave temporary assets for recovery; a pending host transaction blocks another update until reviewed. Rebuild generated packages to distribute the corrected tools. See `Tests/SETTINGS_BACKUP_AUDIT.md`.
 
 Preview an operation without writing any files or directories:
 
@@ -129,7 +131,7 @@ pwsh -File .\Tests\Test-ReleaseSafety.ps1
 pwsh -File .\Tests\Test-ConfigStaging.ps1
 ```
 
-The release safety suite parses PowerShell scripts, builds a synthetic RawCopy package and checks preflight, idempotence, backups, injected IO/access failures, rollback, and DryRun filesystem invariance. The last reported local run passed **38/38 release safety** and **18/18 staging** tests (9 PowerShell files parsed without errors). The real-engine follow-up is recorded as an addendum to `Tests/CONFIG_STAGING_AUDIT.md`; historic limitations in `Tests/RELEASE_AUDIT.md` are retained with their original scope. These tests are local; this repository does not claim automated CI coverage.
+The release safety suite parses PowerShell scripts, builds a synthetic RawCopy package and checks preflight, idempotence, backups, injected IO/access failures, rollback, and DryRun filesystem invariance. The last reported local run passed **41/41 release safety** and **18/18 staging** tests (9 PowerShell files parsed without errors). The real-engine follow-up is recorded as an addendum to `Tests/CONFIG_STAGING_AUDIT.md`; historic limitations in `Tests/RELEASE_AUDIT.md` are retained with their original scope. These tests are local; this repository does not claim automated CI coverage.
 
 ## Documentation and release preparation
 

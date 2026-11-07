@@ -501,7 +501,10 @@ GlobalDefaultGameMode=/Script/GameAnimationSample.LegacySampleGameMode
         Assert-True ($backupDirectories.Count -ge 2) "Expected at least two update backups under '$expectedBackupRoot'."
         foreach ($backupDirectory in $backupDirectories) {
             Assert-True ($backupDirectory.Name -match "^$([regex]::Escape($manifest.PluginName))-\d{8}-\d{6}(?:-\d+)?$") "Expected timestamped backup name, got '$($backupDirectory.Name)'."
-            Assert-GasHostPluginLayout -HostPluginRoot $backupDirectory.FullName -PluginName $manifest.PluginName
+            $settings = Read-GasJson (Join-Path $backupDirectory.FullName 'SettingsBackup.json')
+            Assert-True ($settings.BackupKind -eq 'SettingsOnly') 'Expected a settings-only backup.'
+            Assert-GasInventory -Root $backupDirectory.FullName -Inventory $settings.Files
+            Assert-True (@(Get-ChildItem -LiteralPath $backupDirectory.FullName -Recurse -File | Where-Object Extension -notin '.ini','.json','.uproject','.uplugin').Count -eq 0) 'Unexpected payload in settings backup.'
         }
 
         Assert-GasHostPluginLayout -HostPluginRoot (Join-Path $hostContext.HostProjectRoot "Plugins\$($manifest.PluginName)") -PluginName $manifest.PluginName

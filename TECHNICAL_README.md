@@ -96,7 +96,7 @@ Important:
 - do not build twice over an older package directory without that explicit refresh
 - stale content in the generated output can cause duplicate asset IDs and path conflicts in Unreal Editor
 
-The builder creates a unique sibling staging directory, validates all required files, parses distributed PowerShell tools and verifies the generated SHA-256 inventory before committing. Existing output is renamed to `.previous-<guid>` and retained. A failed build leaves the prior package intact. `-DryRun` also works through the Clean-Build wrapper and writes nothing. Only `PluginName=GameAnimationSample` is supported.
+The builder creates a unique sibling staging directory and validates required files, distributed scripts and inventory hashes before committing. Existing output is temporarily renamed to `.previous-<guid>` for rollback; after commit that asset payload is deleted. Only `.settings-backup-<guid>` remains, containing INIs and descriptor/install metadata. A failure before commit preserves the previous output. A cleanup failure after commit reports the temporary path and never attempts rollback after deletion has started. `-DryRun` also works through the Clean-Build wrapper and writes nothing. Only `PluginName=GameAnimationSample` is supported.
 
 Refresh validates the old output's Axchemy manifest/descriptor identity independently of current installability. Recognized legacy RawCopy outputs may lack the new safety module/inventory or use the old `5.8` descriptor string; these can be previewed and rebuilt. Installed host plugins and foreign identities are rejected. The newly built package still must pass full current package validation before replacing the old output.
 
@@ -196,13 +196,15 @@ Rebuild the package to distribute updated runtime scripts, then run Update/DryRu
 
 ### 4.8. Install/update recovery
 
-Before changes, the toolkit creates a snapshot of the host's `.uproject` and every existing managed INI under `Saved\GameAnimationSampleToolkit\Transactions\<unique-id>`. Missing INIs remain absent in the snapshot and are removed on rollback. When installation fails, it restores these files and removes only the plugin created by that transaction. Update moves the previous plugin to the timestamped backup and restores it on failure. The previous plugin is moved, rather than deleted or copied over. Staged package copies are verified by SHA-256 before the swap.
+Before changes, the toolkit snapshots the host `.uproject` and managed INIs under `Saved\GameAnimationSampleToolkit\Transactions\<unique-id>`. Missing INIs are removed on rollback. Install failure restores those settings and removes only its partial plugin. Update moves the old plugin temporarily to `Transactions/<unique-id>/PreviousPlugin` for rollback before commit. Incoming copies are verified by SHA-256. After commit the temporary previous assets are deleted.
 
-Snapshots are retained on success and failure, alongside a `Transaction.json` journal (`Preparing`, `Prepared`, `Committed`, `RolledBack`). Successful rollback deletes partial staging payloads. An unfinished journal blocks subsequent operations until recovery is reviewed. Plugin backups retain the legacy layout and timestamp/collision suffix naming; no automatic retention deletion occurs. Host recovery files are in the associated transaction snapshot, not mixed into the old plugin payload.
+Settings snapshots and journals (`Preparing`, `Prepared`, `Committed`, `RolledBack`) are retained. Successful rollback removes partial payloads. Unfinished transactions, including a committed transaction with pending `PreviousPlugin` cleanup, block another update until reviewed. Cleanup starts after commit; failures report that the active plugin is valid and never roll back to a partially deleted payload.
+
+Permanent backups keep timestamp/collision suffix names under `Saved/GameAnimationSampleToolkit/Backups/GameAnimationSample-yyyyMMdd-HHmmss[-n]`, with **settings-only** contents: `Host/HostProject.uproject`, `Host/Config/*.ini`, `Host/SnapshotInventory.json`, plugin descriptor/install JSON metadata, `Plugin/Config/**/*.ini`, `Plugin/InstallData/**/*.ini` and `SettingsBackup.json` with `BackupKind=SettingsOnly` and verified hashes. They contain no assets, scripts, binaries or caches and cannot restore an old asset version after success. Use the source package/version control or an independent asset backup for that purpose. Historical backups and previous outputs are not deleted automatically. See `Tests/SETTINGS_BACKUP_AUDIT.md`.
 
 If rollback itself cannot complete, the error includes the snapshot location for manual recovery. This is best-effort script-level rollback; an OS crash or sudden power loss is not a fully atomic filesystem transaction. Keep the original project in version control and back up the project before the first installation.
 
-For manual recovery, close Unreal and all project writers. Read the journal and preserve both directories first. Restore `HostProject.uproject` to the exact host descriptor and each snapshotted `Config` file to the host. For managed INIs absent in the snapshot, remove only files known to have been created by the interrupted transaction. For Update, restore the complete plugin backup to `Plugins/GameAnimationSample`; for Install, remove only the partial plugin identified in that journal. Recheck hashes/config and deliberately mark the reviewed journal `RolledBack` before retrying. Do not replay snapshot paths from untrusted sources. There is no automatic crash-recovery command.
+For manual recovery, close project writers and read the journal. For an uncommitted operation, restore snapshotted host settings and temporary `PreviousPlugin` when present; remove only new managed INIs absent from the snapshot or the Install's partial plugin. For a committed operation with pending cleanup, keep the active plugin and finish deletion of the identified temporary payload; it may already be partially deleted. Permanent backups restore settings only. Recheck hashes/config and deliberately resolve the journal before retrying. Do not replay untrusted paths. No automatic crash-recovery command is provided.
 
 Only local filesystem paths are supported. Roots, UNC/device paths, alternate streams, `..` traversal, symbolic links, junctions, hard links and other reparse points in inspected paths are rejected. Source/package and host must not overlap. Host resolution from a parent folder uses the actual `.uproject` parent as the write root. A named mutex serializes toolkit writers for the same host; it does not prevent third-party applications from changing files after preflight. Run with the editor closed in a trusted workspace. Package hashes detect accidental corruption; they do not authenticate an untrusted package or its executable tools.
 
@@ -239,11 +241,11 @@ The update flow:
 
 1. requires installed toolkit ownership metadata and compatible package identity
 2. validates the new package and plans every host configuration change before writing
-3. stages and verifies the new payload, then moves the old plugin into a unique backup
+3. saves settings only, stages/verifies the new payload and temporarily moves the old plugin into its transaction
 4. commits the replacement and applies the planned INI/descriptor changes with rollback on failure
-5. retains the host recovery snapshot and previous plugin backup
+5. deletes the temporary previous assets and retains only configuration snapshots/settings backups
 
-User changes to files tracked by a new package's inventory block Update. Unmanaged additional files are preserved if they do not collide with incoming package paths; collisions abort. Legacy installed packages without an inventory remain upgradeable, but edits to their overlapping payload files cannot be identified reliably. Review their complete backup before migration. Rebuild legacy *source packages* to include current safety tools before using this release. `-FromManifest` may reference only the manifest inside `PackageRoot`; external overrides are rejected.
+User changes to inventoried files block Update. Additional unmanaged files survive unless they collide with incoming paths. Legacy overlapping edits cannot be reliably identified; review migration and keep independent asset backups if needed. Rebuild packages to distribute the current settings-only backup tools. `-FromManifest` may reference only the manifest inside `PackageRoot`.
 
 This lets you move the host project forward without replacing unrelated project decisions.
 
@@ -251,7 +253,7 @@ This lets you move the host project forward without replacing unrelated project 
 
 The build output is not auto-cleared in the public toolkit.
 
-Before rebuilding from a changed source sample or distributing updated installer tools, rerun the builder with `-RefreshOutput` (and the **same** `-OutputRoot` if used) so the previous generated package output is replaced explicitly while retaining its reviewed backup.
+Before rebuilding from a changed sample or distributing updated tools, use `-RefreshOutput` and the same `-OutputRoot` if used. The previous output is replaced explicitly; only its settings backup remains after commit.
 
 If you do not, stale assets from the previous build can remain in the generated package and surface later as duplicate asset IDs or mount path conflicts.
 

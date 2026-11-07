@@ -1520,32 +1520,36 @@ function Replace-GasHostPluginPackage {
 
     New-GasDirectory -Path $BackupsRoot
     $backupRoot = New-GasUniqueBackupRoot -BackupsRoot $BackupsRoot -PluginName $PluginName
-    Copy-Item -LiteralPath $HostPluginRoot -Destination $backupRoot -Recurse -Force
-
-    # Restore internally if replacement fails before this function can return
-    # its backup path to the caller. Otherwise the outer transaction would not
-    # know where the previous plugin was saved.
+    New-GasSettingsBackup -SourcePluginRoot $HostPluginRoot -BackupRoot $backupRoot
+    $temporaryRoot = Join-Path $BackupsRoot ('.transaction-' + [guid]::NewGuid().ToString('N'))
+    New-GasDirectory $temporaryRoot
+    $stagedRoot = Join-Path $temporaryRoot 'Package'
+    $previousRoot = Join-Path $temporaryRoot 'PreviousPlugin'
+    $oldMoved = $false; $newMoved = $false
     try {
-        Remove-Item -LiteralPath $HostPluginRoot -Recurse -Force
-        New-GasDirectory -Path $HostPluginRoot
-        Copy-GasDirectoryContent -Source $resolvedPackageRoot -Destination $HostPluginRoot
+        Copy-Item -LiteralPath $resolvedPackageRoot -Destination $stagedRoot -Recurse
+        $null = Assert-GasPackage $stagedRoot
+        [IO.Directory]::Move($HostPluginRoot, $previousRoot)
+        $oldMoved = $true
+        [IO.Directory]::Move($stagedRoot, $HostPluginRoot)
+        $newMoved = $true
         Assert-GasHostPluginLayout -HostPluginRoot $HostPluginRoot -PluginName $PluginName
     }
     catch {
         $originalFailure = $_
         try {
-            if (Test-Path -LiteralPath $HostPluginRoot) {
-                Remove-Item -LiteralPath $HostPluginRoot -Recurse -Force
-            }
-            Copy-Item -LiteralPath $backupRoot -Destination $HostPluginRoot -Recurse -Force
-            Assert-GasHostPluginLayout -HostPluginRoot $HostPluginRoot -PluginName $PluginName
+            if ($newMoved) { Remove-GasTransactionDirectory -Path $HostPluginRoot -ParentRoot (Split-Path -Parent $HostPluginRoot) }
+            if ($oldMoved) { [IO.Directory]::Move($previousRoot, $HostPluginRoot) }
+            Remove-GasTransactionDirectory -Path $temporaryRoot -ParentRoot $BackupsRoot
         }
         catch {
-            throw "Package replacement failed. Recovery of the original plugin also failed. Backup is at '$backupRoot'. Replacement error: $originalFailure. Recovery error: $_"
+            throw "Package replacement failed and rollback was incomplete. Temporary recovery payload: '$previousRoot'; settings backup: '$backupRoot'. Replacement error: $originalFailure. Recovery error: $_"
         }
         throw $originalFailure
     }
 
+    try { Remove-GasTransactionDirectory -Path $temporaryRoot -ParentRoot $BackupsRoot }
+    catch { throw "Package replaced, but temporary cleanup failed at '$temporaryRoot'. Error: $_" }
     return $backupRoot
 }
 
